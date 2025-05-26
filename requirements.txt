@@ -1,6 +1,6 @@
-Flask==2.3.3
+numpy==1.24.4
 tensorflow==2.14.0
+flask==2.3.3
 opencv-python-headless
-numpy
-Pillow
 gunicorn
+Pillow

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: blur-unblur-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/main.py
+    envVars:
+      - key: MODEL_PATH
+        value: app/model/blur_detection_model_v2.h5
+    plan: free

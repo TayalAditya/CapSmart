@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import tempfile
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress most TensorFlow logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logs
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')  # Only show errors
 import io
@@ -16,15 +16,16 @@ from tensorflow.keras.preprocessing.image import img_to_array
 import joblib
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+# Initialize Flask app first
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 
-app = Flask(__name__)
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== Environment Variables & Paths =====
+# ===== Constants and Paths =====
 MODEL_PATH = os.getenv("MODEL_PATH", "app/model/blur_detection_model_v2.h5")
 ISO_MODEL_PATH = os.path.join("app/model", "iso_classifier_model.h5")
 ISO_SCALER_PATH = os.path.join("app/model", "iso_feature_scaler.pkl")
@@ -34,7 +35,30 @@ SS_SCALER_PATH = os.path.join("app/model", "stable_shutter_scaler.pkl")
 IMAGE_SIZE = (224, 224)
 SETTINGS_FILE = "settings.json"
 
+# ===== Model Container =====
+models = {
+    'blur': None,
+    'iso_model': None,
+    'iso_scaler': None,
+    'class_to_iso': None,
+    'ss_model': None,
+    'ss_scaler': None
+}
+
+# ===== Helper Functions =====
+def safe_load(model_key, loader, path):
+    """Safely load a model/scaler with error handling"""
+    try:
+        if os.path.exists(path):
+            models[model_key] = loader(path)
+            logger.info(f"Loaded {model_key} from {path}")
+        else:
+            logger.warning(f"Missing model file: {path}")
+    except Exception as e:
+        logger.error(f"Failed to load {model_key}: {str(e)}")
+
 def validate_model_loading():
+    """Validate essential models are loaded"""
     essential_models = [
         ('iso_model', ISO_MODEL_PATH),
         ('iso_scaler', ISO_SCALER_PATH),
@@ -49,109 +73,13 @@ def validate_model_loading():
             missing.append(f"{name} ({path})")
     
     if missing:
-        logger.critical(f"CRITICAL: Failed to load essential models: {', '.join(missing)}")
+        logger.critical(f"CRITICAL: Missing essential models: {', '.join(missing)}")
         raise SystemExit(1)
 
+# ===== Model Loading =====
 try:
-    # Load models with absolute paths
-    safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), 
-              os.path.abspath(MODEL_PATH))
+    logger.info("Starting model loading sequence")
     
-    safe_load('iso_model', tf.keras.models.load_model, 
-              os.path.abspath(ISO_MODEL_PATH))
-    
-    safe_load('iso_scaler', joblib.load, 
-              os.path.abspath(ISO_SCALER_PATH))
-    
-    safe_load('class_to_iso', joblib.load, 
-              os.path.abspath(ISO_MAP_PATH))
-    
-    safe_load('ss_model', lambda p: load_model(p, compile=False), 
-              os.path.abspath(SS_MODEL_PATH))
-    
-    safe_load('ss_scaler', joblib.load, 
-              os.path.abspath(SS_SCALER_PATH))
-
-    validate_model_loading()
-    logger.info("All essential models loaded successfully")
-
-except Exception as e:
-    logger.critical(f"Fatal model loading error: {str(e)}")
-    raise SystemExit(1)
-
-models = {
-    'blur': None,
-    'iso_model': None,
-    'iso_scaler': None,
-    'class_to_iso': None,
-    'ss_model': None,
-    'ss_scaler': None
-}
-
-# try:
-#     # Load blur detection model
-#     if os.path.exists(MODEL_PATH):
-#         models['blur'] = load_model(
-#             MODEL_PATH,
-#             custom_objects={'mse': tf.keras.losses.MeanSquaredError()}
-#         )
-#         logger.info(f"Blur model loaded from {MODEL_PATH}")
-    
-#     # Load ISO recommendation models
-#     models['iso_model'] = tf.keras.models.load_model(ISO_MODEL_PATH)
-#     models['iso_scaler'] = joblib.load(ISO_SCALER_PATH)
-#     class_to_iso = joblib.load(ISO_MAP_PATH)
-#     models['class_to_iso'] = [class_to_iso[i] for i in range(len(class_to_iso))]
-    
-#     # Load shutter speed model
-#     models['ss_model'] = load_model(SS_MODEL_PATH, compile=False)
-#     models['ss_scaler'] = joblib.load(SS_SCALER_PATH)
-def brightness(image):
-    """Calculate image brightness as the mean of grayscale values."""
-    if image is None:
-        return 0.0
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        return float(np.mean(gray))
-    except Exception as e:
-        logger.error(f"Brightness calculation error: {e}")
-        return 0.0
-
-def histogram_stats(image):
-    """Calculate mean and variance of the image histogram."""
-    if image is None:
-        return 0.0, 0.0
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-        return float(np.mean(hist)), float(np.var(hist))
-    except Exception as e:
-        logger.error(f"Histogram stats error: {e}")
-        return 0.0, 0.0
-
-def edge_density(image):
-    """Calculate the proportion of pixels identified as edges."""
-    if image is None:
-        return 0.0
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 100, 200)
-        return float(np.sum(edges > 0) / edges.size) if edges.size > 0 else 0.0
-    except Exception as e:
-        logger.error(f"Edge density error: {e}")
-        return 0.0
-        
-def safe_load(model_key, loader, path):
-    try:
-        if os.path.exists(path):
-            models[model_key] = loader(path)
-            logger.info(f"Loaded {model_key} from {path}")
-        else:
-            logger.warning(f"Missing model file: {path}")
-    except Exception as e:
-        logger.error(f"Failed to load {model_key}: {str(e)}")
-
-try:
     # Load models using safe_load
     safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), MODEL_PATH)
     safe_load('iso_model', tf.keras.models.load_model, ISO_MODEL_PATH)
@@ -160,52 +88,18 @@ try:
     safe_load('ss_model', lambda p: load_model(p, compile=False), SS_MODEL_PATH)
     safe_load('ss_scaler', joblib.load, SS_SCALER_PATH)
 
-    # Process class_to_iso if loaded
+    # Post-process ISO mapping
     if models['class_to_iso'] is not None:
         models['class_to_iso'] = [models['class_to_iso'][i] for i in range(len(models['class_to_iso']))]
 
+    validate_model_loading()
+    logger.info("All essential models loaded successfully")
+
 except Exception as e:
-    logger.error(f"Model loading failed: {e}")
+    logger.critical(f"Model loading failed: {e}")
     raise SystemExit(1)
 
-def predict_shutter_speed(image):
-    """Predict shutter speed using the loaded model and scaler."""
-    if not models['ss_model'] or not models['ss_scaler']:
-        logger.error("Shutter speed model/scaler not loaded!")
-        return None
-    try:
-        # Extract all 7 features
-        laplacian = detect_blur_laplacian(image)
-        tenengrad = detect_blur_tenengrad(image)
-        pbm = perceptual_blur_metric(image)
-        edge = edge_density(image)
-        bright = brightness(image)
-        hist_mean, hist_var = histogram_stats(image)
-        
-        features = [
-            laplacian,
-            tenengrad,
-            pbm,
-            edge,
-            bright,
-            hist_mean,
-            hist_var
-        ]
-        
-        # Validate features
-        if not all(np.isfinite(f) for f in features):
-            logger.error("Non-finite feature values detected!")
-            return None
-
-        # Scale features and predict
-        scaled = models['ss_scaler'].transform([features])
-        prediction = models['ss_model'].predict(scaled, verbose=0)
-        return float(prediction[0][0])
-    except Exception as e:
-        logger.error(f"Shutter speed prediction failed: {e}")
-        return None
-        
-# ===== Blur Detection Functions =====
+# ===== Image Processing Functions =====
 def detect_blur_laplacian(image):
     """Calculate Laplacian variance for blur detection"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -233,80 +127,65 @@ def perceptual_blur_metric(image, threshold=0.1):
         logger.error(f"Perceptual blur error: {e}")
         return 0.0
 
-def predict_blur_with_model(image):
-    """Predict blur score using the loaded CNN model"""
-    if not models['blur'] or image is None:
-        return None
-    try:
-        resized = cv2.resize(image, IMAGE_SIZE)
-        processed = preprocess_input(img_to_array(resized))
-        prediction = models['blur'].predict(np.expand_dims(processed, 0))
-        return float(prediction[0][0]) * 5  # Scale to 0-100 range
-    except Exception as e:
-        logger.error(f"CNN blur prediction failed: {e}")
-        return None
-        
-# ===== Heatmap Generation =====
-def generate_heatmap_overlay(image):
-    """Generates heatmap visualization for camera shake detection"""
+# ===== Feature Calculation Functions =====
+def brightness(image):
+    """Calculate image brightness"""
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        shifted = np.roll(gray, -30, axis=0)  # Detect vertical shifts
-        diff = cv2.absdiff(gray, shifted)
-        inv = cv2.bitwise_not(diff)
-        blur = cv2.GaussianBlur(inv, (11, 11), 0)
-        norm = cv2.normalize(blur, None, 0, 255, cv2.NORM_MINMAX)
-        heatmap = cv2.applyColorMap(norm.astype('uint8'), cv2.COLORMAP_JET)
-        return cv2.addWeighted(image, 0.7, heatmap, 0.3, 0)
+        return float(np.mean(gray))
     except Exception as e:
-        logger.error(f"Heatmap generation failed: {e}")
-        return None
+        logger.error(f"Brightness error: {e}")
+        return 0.0
 
-# ===== Recommendation System =====
-def predict_iso(image):
-    """Optimized ISO prediction"""
+def histogram_stats(image):
+    """Calculate histogram statistics"""
     try:
-        # Downsample image for faster processing
-        small_img = cv2.resize(image, (224, 224))
-        gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
-        
-        # Simplified histogram calculation
-        hist = cv2.calcHist([gray], [0], None, [64], [0, 256])  # Reduced bins
-        
-        features = [
-            np.mean(gray),
-            np.mean(hist),
-            np.var(hist),
-            detect_blur_laplacian(small_img),  # Use smaller image
-            perceptual_blur_metric(small_img)
-        ]
-        
-        scaled = models['iso_scaler'].transform([features])
-        proba = models['iso_model'].predict(scaled, verbose=0)[0]  # Disable logging
-        return int(models['class_to_iso'][np.argmax(proba)])
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        return float(np.mean(hist)), float(np.var(hist))
     except Exception as e:
-        logger.error(f"ISO prediction failed: {str(e)}", exc_info=True)
-        return None
+        logger.error(f"Histogram error: {e}")
+        return 0.0, 0.0
 
-# ===== All Endpoints =====
-@app.route('/generate_heatmap', methods=['POST'])
-def generate_heatmap():
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
+def edge_density(image):
+    """Calculate edge density"""
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 100, 200)
+        return float(np.sum(edges > 0) / edges.size) if edges.size > 0 else 0.0
+    except Exception as e:
+        logger.error(f"Edge density error: {e}")
+        return 0.0
+
+# ===== Prediction Functions =====
+def predict_shutter_speed(image):
+    """Predict shutter speed using loaded model"""
+    if not models['ss_model'] or not models['ss_scaler']:
+        logger.error("Shutter speed model/scaler not loaded!")
+        return None
     
     try:
-        with tempfile.NamedTemporaryFile() as tmp:
-            request.files['image'].save(tmp.name)
-            img = cv2.imread(tmp.name)
-            if img is None:
-                return jsonify({'error': 'Invalid image'}), 400
-                
-            heatmap_img = generate_heatmap_overlay(img)
-            _, buffer = cv2.imencode('.jpg', heatmap_img)
-            return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+        # Feature extraction
+        lap = detect_blur_laplacian(image)
+        ten = detect_blur_tenengrad(image)
+        pbm = perceptual_blur_metric(image)
+        edge = edge_density(image)
+        bright = brightness(image)
+        hist_mean, hist_var = histogram_stats(image)
+        
+        features = [lap, ten, pbm, edge, bright, hist_mean, hist_var]
+        
+        if not all(np.isfinite(f) for f in features):
+            logger.error("Invalid feature values detected")
+            return None
+
+        scaled = models['ss_scaler'].transform([features])
+        prediction = models['ss_model'].predict(scaled, verbose=0)
+        return float(prediction[0][0])
+    
     except Exception as e:
-        logger.error(f"Heatmap error: {e}")
-        return jsonify({'error': 'Heatmap generation failed'}), 500
+        logger.error(f"Shutter speed prediction failed: {e}")
+        return None
 
 @app.route('/recommend_settings', methods=['POST'])
 def recommend_settings():

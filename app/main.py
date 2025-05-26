@@ -11,6 +11,11 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array
 import joblib
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -118,22 +123,28 @@ def generate_heatmap_overlay(image):
 
 # ===== Recommendation System =====
 def predict_iso(image):
-    """Predicts optimal ISO setting"""
+    """Optimized ISO prediction"""
     try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        # Downsample image for faster processing
+        small_img = cv2.resize(image, (224, 224))
+        gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
+        
+        # Simplified histogram calculation
+        hist = cv2.calcHist([gray], [0], None, [64], [0, 256])  # Reduced bins
+        
         features = [
             np.mean(gray),
             np.mean(hist),
             np.var(hist),
-            detect_blur_laplacian(image),
-            perceptual_blur_metric(image)
+            detect_blur_laplacian(small_img),  # Use smaller image
+            perceptual_blur_metric(small_img)
         ]
+        
         scaled = models['iso_scaler'].transform([features])
-        proba = models['iso_model'].predict(scaled)[0]
+        proba = models['iso_model'].predict(scaled, verbose=0)[0]  # Disable logging
         return int(models['class_to_iso'][np.argmax(proba)])
     except Exception as e:
-        logger.error(f"ISO prediction failed: {e}")
+        logger.error(f"ISO prediction failed: {str(e)}", exc_info=True)
         return None
 
 # ===== All Endpoints =====
@@ -163,24 +174,33 @@ def recommend_settings():
     
     try:
         with tempfile.NamedTemporaryFile() as tmp:
+            # 1. Save and resize image
             request.files['image'].save(tmp.name)
             img = cv2.imread(tmp.name)
             if img is None:
                 return jsonify({'error': 'Invalid image'}), 400
 
-            iso = predict_iso(img)
-            shutter_speed = models['ss_model'].predict(
-                models['ss_scaler'].transform([[detect_blur_laplacian(img), detect_blur_tenengrad(img)]])
-            )[0][0]
+            # Resize to reduce processing time
+            img = cv2.resize(img, (640, 480))  # Adjust dimensions as needed
+
+            # 2. Parallelize predictions
+            with ThreadPoolExecutor() as executor:
+                iso_future = executor.submit(predict_iso, img)
+                shutter_future = executor.submit(predict_shutter_speed, img)
+                iso = iso_future.result(timeout=30)
+                shutter_speed = shutter_future.result(timeout=30)
 
             return jsonify({
                 'recommended_iso': iso,
                 'recommended_shutter_speed': float(shutter_speed)
             })
+            
+    except TimeoutError:
+        logger.error("Recommendation timed out")
+        return jsonify({'error': 'Processing timeout'}), 504
     except Exception as e:
-        logger.error(f"Recommendation error: {e}")
-        return jsonify({'error': 'Recommendation failed'}), 500
-
+        logger.error(f"Recommendation error: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Server error'}), 500
 
 @app.route('/')
 def health_check():

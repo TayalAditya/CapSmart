@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pkl
+*.h5
+*.zip
+settings.json
+.env
+.idea/
+*.ipynb
+*.log
+.DS_Store

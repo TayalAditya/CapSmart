@@ -41,25 +41,46 @@ models = {
     'ss_scaler': None
 }
 
-try:
-    # Load blur detection model
-    if os.path.exists(MODEL_PATH):
-        models['blur'] = load_model(
-            MODEL_PATH,
-            custom_objects={'mse': tf.keras.losses.MeanSquaredError()}
-        )
-        logger.info(f"Blur model loaded from {MODEL_PATH}")
+# try:
+#     # Load blur detection model
+#     if os.path.exists(MODEL_PATH):
+#         models['blur'] = load_model(
+#             MODEL_PATH,
+#             custom_objects={'mse': tf.keras.losses.MeanSquaredError()}
+#         )
+#         logger.info(f"Blur model loaded from {MODEL_PATH}")
     
-    # Load ISO recommendation models
-    models['iso_model'] = tf.keras.models.load_model(ISO_MODEL_PATH)
-    models['iso_scaler'] = joblib.load(ISO_SCALER_PATH)
-    class_to_iso = joblib.load(ISO_MAP_PATH)
-    models['class_to_iso'] = [class_to_iso[i] for i in range(len(class_to_iso))]
+#     # Load ISO recommendation models
+#     models['iso_model'] = tf.keras.models.load_model(ISO_MODEL_PATH)
+#     models['iso_scaler'] = joblib.load(ISO_SCALER_PATH)
+#     class_to_iso = joblib.load(ISO_MAP_PATH)
+#     models['class_to_iso'] = [class_to_iso[i] for i in range(len(class_to_iso))]
     
-    # Load shutter speed model
-    models['ss_model'] = load_model(SS_MODEL_PATH, compile=False)
-    models['ss_scaler'] = joblib.load(SS_SCALER_PATH)
+#     # Load shutter speed model
+#     models['ss_model'] = load_model(SS_MODEL_PATH, compile=False)
+#     models['ss_scaler'] = joblib.load(SS_SCALER_PATH)
 
+def safe_load(model_key, loader, path):
+    try:
+        if os.path.exists(path):
+            models[model_key] = loader(path)
+            logger.info(f"Loaded {model_key} from {path}")
+        else:
+            logger.warning(f"Missing model file: {path}")
+    except Exception as e:
+        logger.error(f"Failed to load {model_key}: {str(e)}")
+
+# Load models
+safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), MODEL_PATH)
+safe_load('iso_model', tf.keras.models.load_model, ISO_MODEL_PATH)
+safe_load('iso_scaler', joblib.load, ISO_SCALER_PATH)
+safe_load('class_to_iso', joblib.load, ISO_MAP_PATH)
+safe_load('ss_model', lambda p: load_model(p, compile=False), SS_MODEL_PATH)
+safe_load('ss_scaler', joblib.load, SS_SCALER_PATH)
+
+if models['class_to_iso']:
+    models['class_to_iso'] = [models['class_to_iso'][i] for i in range(len(models['class_to_iso']))]
+    
 except Exception as e:
     logger.error(f"Model loading failed: {e}")
     raise SystemExit(1)

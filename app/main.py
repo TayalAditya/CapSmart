@@ -223,18 +223,32 @@ def recommend_settings():
         logger.error(f"Recommendation error: {str(e)}", exc_info=True)
         return jsonify({'error': 'Server error'}), 500
 
+# @app.route('/')
+# def health_check():
+#     return jsonify({
+#         "status": "running",
+#         "endpoints": ["/analyze", "/unblur", "/settings", "/recommend"]
+#     })
+
 @app.route('/')
 def health_check():
     return jsonify({
-        "status": "running",
-        "endpoints": ["/analyze", "/unblur", "/settings", "/recommend"]
-    })
+        "status": "healthy",
+        "loaded_models": {
+            "blur": models['blur'] is not None,
+            "iso": models['iso_model'] is not None,
+            "shutter": models['ss_model'] is not None
+        }
+    }), 200
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
-
+        
+    if request.content_length > 5 * 1024 * 1024:  # 5MB limit
+        return jsonify({'error': 'Image too large (max 5MB)'}), 413
     try:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             request.files['image'].save(tmp.name)

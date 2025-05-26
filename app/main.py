@@ -35,6 +35,7 @@ IMAGE_SIZE = (224, 224)
 SETTINGS_FILE = "settings.json"
 
 # ===== Load All Models =====
+# ===== Load All Models =====
 models = {
     'blur': None,
     'iso_model': None,
@@ -43,6 +44,51 @@ models = {
     'ss_model': None,
     'ss_scaler': None
 }
+
+def validate_model_loading():
+    essential_models = [
+        ('iso_model', ISO_MODEL_PATH),
+        ('iso_scaler', ISO_SCALER_PATH),
+        ('class_to_iso', ISO_MAP_PATH),
+        ('ss_model', SS_MODEL_PATH),
+        ('ss_scaler', SS_SCALER_PATH)
+    ]
+    
+    missing = []
+    for name, path in essential_models:
+        if not models[name]:
+            missing.append(f"{name} ({path})")
+    
+    if missing:
+        logger.critical(f"CRITICAL: Failed to load essential models: {', '.join(missing)}")
+        raise SystemExit(1)
+
+try:
+    # Load models with absolute paths
+    safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), 
+              os.path.abspath(MODEL_PATH))
+    
+    safe_load('iso_model', tf.keras.models.load_model, 
+              os.path.abspath(ISO_MODEL_PATH))
+    
+    safe_load('iso_scaler', joblib.load, 
+              os.path.abspath(ISO_SCALER_PATH))
+    
+    safe_load('class_to_iso', joblib.load, 
+              os.path.abspath(ISO_MAP_PATH))
+    
+    safe_load('ss_model', lambda p: load_model(p, compile=False), 
+              os.path.abspath(SS_MODEL_PATH))
+    
+    safe_load('ss_scaler', joblib.load, 
+              os.path.abspath(SS_SCALER_PATH))
+
+    validate_model_loading()
+    logger.info("All essential models loaded successfully")
+
+except Exception as e:
+    logger.critical(f"Fatal model loading error: {str(e)}")
+    raise SystemExit(1)
 
 # try:
 #     # Load blur detection model

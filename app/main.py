@@ -10,151 +10,206 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array
+import joblib
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== CONFIG =====
-MODEL_PATH = os.getenv("MODEL_PATH", "model/blur_detection_model_v2.h5")
+# ===== Environment Variables & Paths =====
+MODEL_PATH = os.getenv("MODEL_PATH", "app/model/blur_detection_model_v2.h5")
+ISO_MODEL_PATH = os.path.join("app/model", "iso_classifier_model.h5")
+ISO_SCALER_PATH = os.path.join("app/model", "iso_feature_scaler.pkl")
+ISO_MAP_PATH = os.path.join("app/model", "iso_class_to_label.pkl")
+SS_MODEL_PATH = os.path.join("app/model", "stable_shutter_model.h5")
+SS_SCALER_PATH = os.path.join("app/model", "stable_shutter_scaler.pkl")
 IMAGE_SIZE = (224, 224)
 SETTINGS_FILE = "settings.json"
 
-# ===== Load Model =====
-model = None
-if os.path.exists(MODEL_PATH):
+# ===== Load All Models =====
+models = {
+    'blur': None,
+    'iso_model': None,
+    'iso_scaler': None,
+    'class_to_iso': None,
+    'ss_model': None,
+    'ss_scaler': None
+}
+
+try:
+    # Load blur detection model
+    if os.path.exists(MODEL_PATH):
+        models['blur'] = load_model(
+            MODEL_PATH,
+            custom_objects={'mse': tf.keras.losses.MeanSquaredError()}
+        )
+        logger.info(f"Blur model loaded from {MODEL_PATH}")
+    
+    # Load ISO recommendation models
+    models['iso_model'] = tf.keras.models.load_model(ISO_MODEL_PATH)
+    models['iso_scaler'] = joblib.load(ISO_SCALER_PATH)
+    class_to_iso = joblib.load(ISO_MAP_PATH)
+    models['class_to_iso'] = [class_to_iso[i] for i in range(len(class_to_iso))]
+    
+    # Load shutter speed model
+    models['ss_model'] = load_model(SS_MODEL_PATH, compile=False)
+    models['ss_scaler'] = joblib.load(SS_SCALER_PATH)
+
+except Exception as e:
+    logger.error(f"Model loading failed: {e}")
+    raise SystemExit(1)
+
+# ===== Heatmap Generation =====
+def generate_heatmap_overlay(image):
+    """Generates heatmap visualization for camera shake detection"""
     try:
-        custom_objects = {'mse': tf.keras.losses.MeanSquaredError()}
-        model = load_model(MODEL_PATH, custom_objects=custom_objects)
-        logger.info("Model loaded successfully.")
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        shifted = np.roll(gray, -30, axis=0)  # Detect vertical shifts
+        diff = cv2.absdiff(gray, shifted)
+        inv = cv2.bitwise_not(diff)
+        blur = cv2.GaussianBlur(inv, (11, 11), 0)
+        norm = cv2.normalize(blur, None, 0, 255, cv2.NORM_MINMAX)
+        heatmap = cv2.applyColorMap(norm.astype('uint8'), cv2.COLORMAP_JET)
+        return cv2.addWeighted(image, 0.7, heatmap, 0.3, 0)
     except Exception as e:
-        logger.error(f"Model load error: {e}")
-else:
-    logger.error(f"Model file not found at {MODEL_PATH}")
-
-# ===== Blur Metrics =====
-def detect_blur_laplacian(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return cv2.Laplacian(gray, cv2.CV_64F).var()
-
-def detect_blur_tenengrad(image, ksize=3):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
-    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=ksize)
-    fm = np.sqrt(gx**2 + gy**2)
-    return np.mean(fm)
-
-def perceptual_blur_metric(image, threshold=0.1):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
-    dx = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
-    dy = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
-    magnitude = np.sqrt(dx**2 + dy**2)
-    edge_widths = [1.0 / magnitude[y, x] for y, x in np.column_stack(np.where(edges > 0)) if magnitude[y, x] > threshold]
-    return float(np.mean(edge_widths)) if edge_widths else 0.0
-
-def predict_blur_with_model(image):
-    if model is None:
+        logger.error(f"Heatmap generation failed: {e}")
         return None
+
+# ===== Recommendation System =====
+def predict_iso(image):
+    """Predicts optimal ISO setting"""
     try:
-        image_resized = cv2.resize(image, IMAGE_SIZE)
-        image_array = preprocess_input(img_to_array(image_resized))
-        image_array = np.expand_dims(image_array, axis=0)
-        predicted_blur = model.predict(image_array)[0][0]
-        return float(predicted_blur)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        features = [
+            np.mean(gray),
+            np.mean(hist),
+            np.var(hist),
+            detect_blur_laplacian(image),
+            perceptual_blur_metric(image)
+        ]
+        scaled = models['iso_scaler'].transform([features])
+        proba = models['iso_model'].predict(scaled)[0]
+        return int(models['class_to_iso'][np.argmax(proba)])
     except Exception as e:
-        logger.error(f"Model prediction error: {e}")
+        logger.error(f"ISO prediction failed: {e}")
         return None
 
-# ===== Unblurring (sharpening) =====
-def perform_unblurring(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        return None
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-    unblurred_img = cv2.filter2D(img, -1, kernel)
-    success, buffer = cv2.imencode(".jpg", unblurred_img)
-    return io.BytesIO(buffer) if success else None
+# ===== All Endpoints =====
+@app.route('/generate_heatmap', methods=['POST'])
+def generate_heatmap():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image provided'}), 400
+    
+    try:
+        with tempfile.NamedTemporaryFile() as tmp:
+            request.files['image'].save(tmp.name)
+            img = cv2.imread(tmp.name)
+            if img is None:
+                return jsonify({'error': 'Invalid image'}), 400
+                
+            heatmap_img = generate_heatmap_overlay(img)
+            _, buffer = cv2.imencode('.jpg', heatmap_img)
+            return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+    except Exception as e:
+        logger.error(f"Heatmap error: {e}")
+        return jsonify({'error': 'Heatmap generation failed'}), 500
 
-# ======= Routes =======
+@app.route('/recommend_settings', methods=['POST'])
+def recommend_settings():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image provided'}), 400
+    
+    try:
+        with tempfile.NamedTemporaryFile() as tmp:
+            request.files['image'].save(tmp.name)
+            img = cv2.imread(tmp.name)
+            if img is None:
+                return jsonify({'error': 'Invalid image'}), 400
+
+            iso = predict_iso(img)
+            shutter_speed = models['ss_model'].predict(
+                models['ss_scaler'].transform([[detect_blur_laplacian(img), detect_blur_tenengrad(img)]])
+            )[0][0]
+
+            return jsonify({
+                'recommended_iso': iso,
+                'recommended_shutter_speed': float(shutter_speed)
+            })
+    except Exception as e:
+        logger.error(f"Recommendation error: {e}")
+        return jsonify({'error': 'Recommendation failed'}), 500
+
+
+@app.route('/')
+def health_check():
+    return jsonify({
+        "status": "running",
+        "endpoints": ["/analyze", "/unblur", "/settings", "/recommend"]
+    })
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-    img_path = tmp.name
     try:
-        request.files['image'].save(img_path)
-        tmp.close()
-        image = cv2.imread(img_path)
-        if image is None:
-            return jsonify({'error': 'Invalid image file'}), 400
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            request.files['image'].save(tmp.name)
+            img = cv2.imread(tmp.name)
+            if img is None:
+                return jsonify({'error': 'Invalid image'}), 400
 
-        lap = detect_blur_laplacian(image)
-        ten = detect_blur_tenengrad(image)
-        pbm = perceptual_blur_metric(image)
-        predicted_score = predict_blur_with_model(image)
-        if predicted_score is None:
-            return jsonify({'error': 'Model prediction failed'}), 500
-
-        final_score = min(predicted_score * 5, 100)
-        return jsonify({
-            'laplacian_variance': lap,
-            'tenengrad_score': ten,
-            'perceptual_blur_metric': pbm,
-            'predicted_blur_score': final_score
-        })
+            results = {
+                'laplacian': detect_blur_laplacian(img),
+                'tenengrad': detect_blur_tenengrad(img),
+                'perceptual_blur': perceptual_blur_metric(img),
+                'cnn_blur_score': min(predict_blur_with_model(img) or 0, 100)
+            }
+            return jsonify(results)
     finally:
-        if os.path.exists(img_path):
-            os.unlink(img_path)
+        if os.path.exists(tmp.name):
+            os.remove(tmp.name)
 
-@app.route('/')
-def health_check():
-    return jsonify({"status": "healthy", "message": "Blur detection API is running"}), 200
-    
 @app.route('/unblur', methods=['POST'])
-def unblur_image():
+def unblur():
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-    img_path = tmp.name
     try:
-        request.files['image'].save(img_path)
-        tmp.close()
-        result = perform_unblurring(img_path)
-        if result is None:
-            return jsonify({'error': 'Failed to unblur image'}), 500
-        result.seek(0)
-        return send_file(result, mimetype='image/jpeg')
-    finally:
-        if os.path.exists(img_path):
-            os.unlink(img_path)
+        with tempfile.NamedTemporaryFile() as tmp:
+            request.files['image'].save(tmp.name)
+            img = cv2.imread(tmp.name)
+            if img is None:
+                return jsonify({'error': 'Invalid image'}), 400
+
+            sharpened = cv2.filter2D(img, -1, np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]]))
+            _, buffer = cv2.imencode('.jpg', sharpened)
+            return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+    except Exception as e:
+        logger.error(f"Unblur error: {e}")
+        return jsonify({'error': 'Processing failed'}), 500
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
-    if request.method == 'GET':
-        if not os.path.exists(SETTINGS_FILE):
-            return jsonify({'message': 'No settings saved yet'}), 404
-        with open(SETTINGS_FILE, 'r') as f:
-            return jsonify(json.load(f))
-    elif request.method == 'POST':
+    if request.method == 'POST':
         try:
-            data = request.get_json()
             with open(SETTINGS_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
-            return jsonify({'message': 'Settings saved'}), 200
+                json.dump(request.json, f)
+            return jsonify({'status': 'settings saved'})
         except Exception as e:
-            return jsonify({'error': f'Failed to save settings: {e}'}), 500
+            return jsonify({'error': str(e)}), 500
+    else:
+        if not os.path.exists(SETTINGS_FILE):
+            return jsonify({'error': 'No settings found'}), 404
+        with open(SETTINGS_FILE) as f:
+            return jsonify(json.load(f))
+
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))  # Use Render's PORT env var or default to 5000
-    if model:
+    port = int(os.environ.get("PORT", 5000))
+    if models['blur'] or models['iso_model']:
         app.run(host='0.0.0.0', port=port)
     else:
-        logger.critical("Model could not be loaded. Exiting.")
-        # Exit the app if model is mandatory
-        import sys
-        sys.exit(1)
+        logger.critical("Critical models failed to load!")
+        exit(1)

@@ -1,10 +1,21 @@
+# services:
+#   - type: web
+#     name: blur-unblur-api
+#     env: python
+#     runtime: python-3.10   # <-- ✅ Add this line
+#     buildCommand: pip install -r requirements.txt
+#     startCommand: python app/main.py
+#     envVars:
+#       - key: MODEL_PATH
+#         value: app/model/blur_detection_model_v2.h5
+#     plan: free
+
 services:
   - type: web
     name: blur-unblur-api
     env: python
-    runtime: python-3.10   # <-- ✅ Add this line
     buildCommand: pip install -r requirements.txt
-    startCommand: python app/main.py
+    startCommand: gunicorn app.main:app
     envVars:
       - key: MODEL_PATH
         value: app/model/blur_detection_model_v2.h5

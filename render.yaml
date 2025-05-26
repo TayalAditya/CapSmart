@@ -12,10 +12,10 @@
 
 services:
   - type: web
-    name: blur-unblur-api
+    name: capsmart
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app.main:app
+    startCommand: gunicorn --timeout 120 --workers 2 --bind 0.0.0.0:$PORT app.main:app
     envVars:
       - key: MODEL_PATH
         value: app/model/blur_detection_model_v2.h5

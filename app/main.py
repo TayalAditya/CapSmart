@@ -34,17 +34,6 @@ SS_SCALER_PATH = os.path.join("app/model", "stable_shutter_scaler.pkl")
 IMAGE_SIZE = (224, 224)
 SETTINGS_FILE = "settings.json"
 
-# ===== Load All Models =====
-# ===== Load All Models =====
-models = {
-    'blur': None,
-    'iso_model': None,
-    'iso_scaler': None,
-    'class_to_iso': None,
-    'ss_model': None,
-    'ss_scaler': None
-}
-
 def validate_model_loading():
     essential_models = [
         ('iso_model', ISO_MODEL_PATH),
@@ -89,6 +78,15 @@ try:
 except Exception as e:
     logger.critical(f"Fatal model loading error: {str(e)}")
     raise SystemExit(1)
+
+models = {
+    'blur': None,
+    'iso_model': None,
+    'iso_scaler': None,
+    'class_to_iso': None,
+    'ss_model': None,
+    'ss_scaler': None
+}
 
 # try:
 #     # Load blur detection model

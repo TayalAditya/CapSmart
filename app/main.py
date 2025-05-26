@@ -60,7 +60,41 @@ models = {
 #     # Load shutter speed model
 #     models['ss_model'] = load_model(SS_MODEL_PATH, compile=False)
 #     models['ss_scaler'] = joblib.load(SS_SCALER_PATH)
+def brightness(image):
+    """Calculate image brightness as the mean of grayscale values."""
+    if image is None:
+        return 0.0
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return float(np.mean(gray))
+    except Exception as e:
+        logger.error(f"Brightness calculation error: {e}")
+        return 0.0
 
+def histogram_stats(image):
+    """Calculate mean and variance of the image histogram."""
+    if image is None:
+        return 0.0, 0.0
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        return float(np.mean(hist)), float(np.var(hist))
+    except Exception as e:
+        logger.error(f"Histogram stats error: {e}")
+        return 0.0, 0.0
+
+def edge_density(image):
+    """Calculate the proportion of pixels identified as edges."""
+    if image is None:
+        return 0.0
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 100, 200)
+        return float(np.sum(edges > 0) / edges.size) if edges.size > 0 else 0.0
+    except Exception as e:
+        logger.error(f"Edge density error: {e}")
+        return 0.0
+        
 def safe_load(model_key, loader, path):
     try:
         if os.path.exists(path):
@@ -89,19 +123,35 @@ except Exception as e:
     raise SystemExit(1)
 
 def predict_shutter_speed(image):
-    """Predict recommended shutter speed based on image features."""
+    """Predict shutter speed using the loaded model and scaler."""
     if not models['ss_model'] or not models['ss_scaler']:
-        logger.error("Shutter speed model or scaler not loaded")
+        logger.error("Shutter speed model/scaler not loaded!")
         return None
     try:
-        # Example feature extraction (adjust based on actual model requirements)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Extract all 7 features
+        laplacian = detect_blur_laplacian(image)
+        tenengrad = detect_blur_tenengrad(image)
+        pbm = perceptual_blur_metric(image)
+        edge = edge_density(image)
+        bright = brightness(image)
+        hist_mean, hist_var = histogram_stats(image)
+        
         features = [
-            np.mean(gray),
-            np.var(gray),
-            detect_blur_laplacian(image),
-            cv2.Laplacian(gray, cv2.CV_64F).var()
+            laplacian,
+            tenengrad,
+            pbm,
+            edge,
+            bright,
+            hist_mean,
+            hist_var
         ]
+        
+        # Validate features
+        if not all(np.isfinite(f) for f in features):
+            logger.error("Non-finite feature values detected!")
+            return None
+
+        # Scale features and predict
         scaled = models['ss_scaler'].transform([features])
         prediction = models['ss_model'].predict(scaled, verbose=0)
         return float(prediction[0][0])

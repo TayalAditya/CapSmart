@@ -3,10 +3,12 @@ import cv2
 import numpy as np
 import tempfile
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress most TensorFlow logs
+import tensorflow as tf
+tf.get_logger().setLevel('ERROR')  # Only show errors
 import io
 import json
 import logging
-import tensorflow as tf
 from tensorflow.keras.models import load_model
 from concurrent.futures import ThreadPoolExecutor
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input

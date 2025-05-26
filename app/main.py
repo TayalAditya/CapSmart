@@ -70,21 +70,44 @@ def safe_load(model_key, loader, path):
     except Exception as e:
         logger.error(f"Failed to load {model_key}: {str(e)}")
 
-# Load models
-safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), MODEL_PATH)
-safe_load('iso_model', tf.keras.models.load_model, ISO_MODEL_PATH)
-safe_load('iso_scaler', joblib.load, ISO_SCALER_PATH)
-safe_load('class_to_iso', joblib.load, ISO_MAP_PATH)
-safe_load('ss_model', lambda p: load_model(p, compile=False), SS_MODEL_PATH)
-safe_load('ss_scaler', joblib.load, SS_SCALER_PATH)
+try:
+    # Load models using safe_load
+    safe_load('blur', lambda p: load_model(p, custom_objects={'mse': tf.keras.losses.MeanSquaredError()}), MODEL_PATH)
+    safe_load('iso_model', tf.keras.models.load_model, ISO_MODEL_PATH)
+    safe_load('iso_scaler', joblib.load, ISO_SCALER_PATH)
+    safe_load('class_to_iso', joblib.load, ISO_MAP_PATH)
+    safe_load('ss_model', lambda p: load_model(p, compile=False), SS_MODEL_PATH)
+    safe_load('ss_scaler', joblib.load, SS_SCALER_PATH)
 
-if models['class_to_iso']:
-    models['class_to_iso'] = [models['class_to_iso'][i] for i in range(len(models['class_to_iso']))]
-    
+    # Process class_to_iso if loaded
+    if models['class_to_iso'] is not None:
+        models['class_to_iso'] = [models['class_to_iso'][i] for i in range(len(models['class_to_iso']))]
+
 except Exception as e:
     logger.error(f"Model loading failed: {e}")
     raise SystemExit(1)
 
+def predict_shutter_speed(image):
+    """Predict recommended shutter speed based on image features."""
+    if not models['ss_model'] or not models['ss_scaler']:
+        logger.error("Shutter speed model or scaler not loaded")
+        return None
+    try:
+        # Example feature extraction (adjust based on actual model requirements)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        features = [
+            np.mean(gray),
+            np.var(gray),
+            detect_blur_laplacian(image),
+            cv2.Laplacian(gray, cv2.CV_64F).var()
+        ]
+        scaled = models['ss_scaler'].transform([features])
+        prediction = models['ss_model'].predict(scaled, verbose=0)
+        return float(prediction[0][0])
+    except Exception as e:
+        logger.error(f"Shutter speed prediction failed: {e}")
+        return None
+        
 # ===== Blur Detection Functions =====
 def detect_blur_laplacian(image):
     """Calculate Laplacian variance for blur detection"""

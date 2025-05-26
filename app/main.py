@@ -59,6 +59,47 @@ except Exception as e:
     logger.error(f"Model loading failed: {e}")
     raise SystemExit(1)
 
+# ===== Blur Detection Functions =====
+def detect_blur_laplacian(image):
+    """Calculate Laplacian variance for blur detection"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+def detect_blur_tenengrad(image, ksize=3):
+    """Calculate Tenengrad score for blur detection"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
+    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    return float(np.mean(gx**2 + gy**2))
+
+def perceptual_blur_metric(image, threshold=0.1):
+    """Calculate perceptual blur metric using edge widths"""
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 100, 200)
+        dx = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
+        dy = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
+        magnitude = np.sqrt(dx**2 + dy**2)
+        edge_coords = np.column_stack(np.where(edges > 0))
+        edge_widths = [1.0 / magnitude[y, x] for y, x in edge_coords if magnitude[y, x] > threshold]
+        return float(np.mean(edge_widths)) if edge_widths else 0.0
+    except Exception as e:
+        logger.error(f"Perceptual blur error: {e}")
+        return 0.0
+
+def predict_blur_with_model(image):
+    """Predict blur score using the loaded CNN model"""
+    if not models['blur'] or image is None:
+        return None
+    try:
+        resized = cv2.resize(image, IMAGE_SIZE)
+        processed = preprocess_input(img_to_array(resized))
+        prediction = models['blur'].predict(np.expand_dims(processed, 0))
+        return float(prediction[0][0]) * 5  # Scale to 0-100 range
+    except Exception as e:
+        logger.error(f"CNN blur prediction failed: {e}")
+        return None
+        
 # ===== Heatmap Generation =====
 def generate_heatmap_overlay(image):
     """Generates heatmap visualization for camera shake detection"""

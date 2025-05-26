@@ -4,3 +4,5 @@ flask==2.3.3
 opencv-python-headless
 Pillow
 gunicorn
+joblib==1.3.2          # ← Added missing dependency
+scikit-learn==1.3.2 

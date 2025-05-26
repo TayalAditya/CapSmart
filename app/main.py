@@ -110,6 +110,10 @@ def analyze():
         if os.path.exists(img_path):
             os.unlink(img_path)
 
+@app.route('/')
+def health_check():
+    return jsonify({"status": "healthy", "message": "Blur detection API is running"}), 200
+    
 @app.route('/unblur', methods=['POST'])
 def unblur_image():
     if 'image' not in request.files:
